@@ -1,11 +1,11 @@
 // ============================================
-// Webcore AI Worker — Full Regeneration Support
+// Webcore AI Worker â€” Full Regeneration Support
 // Cloudflare Workers + D1 + Workers AI
 //
 // Regeneration model: messages form a tree (each row has a parent_id).
 // Regenerating an assistant message creates a sibling branch rather than
 // overwriting anything, and each parent remembers which child is the
-// "active" one (active_child_id) — the same branching model claude.ai
+// "active" one (active_child_id) â€” the same branching model claude.ai
 // uses, so every regenerated variant stays in the database and is
 // reachable again later, from any device.
 // ============================================
@@ -313,7 +313,7 @@ function aiErrorResponse(err) {
 // ---- Conversation tree helpers (claude.ai-style branching) ----
 //
 // Every message row has a parent_id. Regenerating an assistant message
-// never deletes or overwrites anything — it inserts a new sibling row
+// never deletes or overwrites anything â€” it inserts a new sibling row
 // under the same parent, and the parent's active_child_id is pointed at
 // the new sibling. The "active path" (root -> ... -> active leaf) is what
 // gets displayed; every previous variant stays in the table and can be
@@ -359,7 +359,7 @@ function getActivePath(tree) {
   return path;
 }
 
-// Ancestor chain (role/content only) leading up to — but not including —
+// Ancestor chain (role/content only) leading up to â€” but not including â€”
 // the given message id. This is the actual context that message was
 // generated from, regardless of which branches are currently active.
 function getAncestorMessages(tree, messageId) {
@@ -504,7 +504,7 @@ export default {
       }
     }
 
-    // POST /api/conversations/:id/branch — switch which sibling variant is active
+    // POST /api/conversations/:id/branch â€” switch which sibling variant is active
     var branchMatch = path.match(/^\/api\/conversations\/([^\/]+)\/branch$/);
     if (method === 'POST' && branchMatch) {
       try {
@@ -568,7 +568,7 @@ export default {
 
         // The new message continues from wherever the conversation is
         // currently displayed (the active leaf), so sending a message after
-        // switching to an older branch continues *that* branch — matching
+        // switching to an older branch continues *that* branch â€” matching
         // claude.ai's behavior.
         var tree = await loadConversationTree(env, conversationId);
         var activePath = getActivePath(tree);
@@ -655,8 +655,8 @@ export default {
           return jsonResponse({ success: false, error: 'This message has no preceding prompt to regenerate from' }, 400);
         }
 
-        // The real ancestry of the message being regenerated — not the
-        // currently active path — so regenerating a message on an older
+        // The real ancestry of the message being regenerated â€” not the
+        // currently active path â€” so regenerating a message on an older
         // branch still uses the context it actually belongs to.
         var ancestors = getAncestorMessages(tree, messageId);
         if (ancestors.length === 0 || ancestors[ancestors.length - 1].role !== 'user') {
@@ -673,7 +673,7 @@ export default {
         var aiResult = await runAIModel(env, resolved.model, contextMessages, temperature, max_tokens, estimatedNeurons);
 
         // Insert the regenerated response as a NEW sibling under the same
-        // parent — the original message (and anything downstream of it) is
+        // parent â€” the original message (and anything downstream of it) is
         // left untouched and stays reachable by switching branches back.
         var now = Date.now();
         var insertStmt = env.DB.prepare(
