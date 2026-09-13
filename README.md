@@ -1,371 +1,155 @@
 # Webcore AI
 
-A single-file Cloudflare Worker that provides a chat interface with multiple AI models, persistent conversation storage, and neuron usage tracking — all running on Cloudflare's Free Tier.
+A self-hosted AI chat app that runs entirely on Cloudflare's edge — one Worker file, one D1 database, no server to manage. It talks to Cloudflare Workers AI for inference, optionally grounds answers in live web search, and keeps a full branching history of every conversation (including every regenerated variant), similar to claude.ai.
+
+## Features
+
+- **Chat with a choice of open models** — Llama 4 Scout, GPT‑OSS 120B, Gemma 4, GLM 4.7 Flash, Qwen 3.8 — all served through Workers AI, picked per-message from the composer.
+- **Branching regeneration** — regenerating a reply never deletes anything. It creates a sibling branch, so every past variant stays reachable via the ◀ ▶ version controls, even after a reload or from another device.
+- **Long-conversation memory** — the most recent ~30 messages are always sent to the model word-for-word. Anything older is folded into a running summary instead of being silently dropped, so very long conversations don't lose context.
+- **Optional web search grounding** — toggle the globe icon in the composer to ground a reply in live search results (via Tavily or Brave). Sources are appended to the reply and persisted with it.
+- **Live status while it works** — the composer shows "Searching the web…" / "Thinking…" as it happens, streamed from the server rather than a generic spinner.
+- **Daily neuron usage dashboard** — tracks Workers AI usage against `DAILY_NEURON_LIMIT` so you don't get an unpleasant surprise.
+- **Light/dark theme**, mobile-friendly layout with swipe-to-open sidebar, and a centered landing composer for new chats.
+- Everything — UI, API, and routing — lives in a single Worker script. No build step, no frontend framework, no separate hosting.
+
+## Requirements
+
+- A [Cloudflare account](https://dash.cloudflare.com/sign-up) (Workers AI and D1 are available on the free plan)
+- [Node.js](https://nodejs.org/) and the [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (`npm install -g wrangler`)
+- (Optional, recommended) A free [Tavily](https://tavily.com) account if you want web search grounding
+
+## Setup
+
+### 1. Create the D1 database
+
+```bash
+wrangler d1 create webcore-ai-db
+```
+
+This prints a `database_id` — you'll need it in the next step. The Worker creates its own tables on first request (conversations, messages, neuron usage), so there's no schema file to run by hand.
+
+### 2. Configure `wrangler.toml`
+
+Create a `wrangler.toml` next to `worker.js`:
+
+```toml
+name = "webcore-ai"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "webcore-ai-db"
+database_id = "<the database_id from step 1>"
+
+[ai]
+binding = "AI"
+```
+
+The binding names (`DB` and `AI`) must match exactly — the Worker code refers to `env.DB` and `env.AI`.
+
+### 3. (Optional) Enable web search
+
+Without a key, the web-search toggle in the UI will show a clear error instead of failing silently — the rest of the app works fine without it.
+
+**Recommended: Tavily** — free, no card required, 1,000 searches/month, built specifically for grounding LLM answers:
+
+```bash
+wrangler secret put TAVILY_API_KEY
+```
+
+Get a key at [tavily.com](https://tavily.com).
+
+**Alternative: Brave Search API** — used automatically if `TAVILY_API_KEY` isn't set. Note Brave's free tier now requires a card at signup.
+
+```bash
+wrangler secret put BRAVE_API_KEY
+```
+
+If neither secret is set, search requests return: *"Web search needs a free API key. Sign up at tavily.com..."*
+
+### 4. Deploy
+
+```bash
+wrangler deploy
+```
+
+Wrangler prints your Worker's URL (`https://webcore-ai.<your-subdomain>.workers.dev`). Open it — that's the whole app.
+
+### Local development
+
+```bash
+wrangler dev
+```
+
+Runs the Worker locally with a local D1 instance. Note: web search calls a real external API even in local dev, so set the secret in `.dev.vars` (a local file, not committed) if you want to test it:
 
 ```
-https://your-worker.workers.dev/
+TAVILY_API_KEY=tvly-your-key-here
 ```
-
----
-
-## Contents
-
-- `worker.js` — the Worker. Deploy this file as-is.
-- `README.md` — this documentation.
-
----
 
 ## How it works
 
-### Architecture
+### Everything is one file
 
-The Worker serves a complete chat application with:
+`worker.js` contains the backend (a standard `fetch` handler), the database schema/migrations, and the entire frontend — the UI is a single HTML string served at `GET /`, with its CSS and vanilla JS inlined. There's no build step because there's nothing to build.
 
-1. **AI Model Integration** — Uses Cloudflare Workers AI with support for multiple models:
-   - Llama 4 Scout 17B (`@cf/meta/llama-4-scout-17b-16e-instruct`)
-   - GPT-OSS 120B (`@cf/openai/gpt-oss-120b`)
-   - Gemma 4 26B (`@cf/google/gemma-4-26b-a4b-it`)
-   - GLM 4.7 Flash (`@cf/zai-org/glm-4.7-flash`)
-   - Qwen 3.8 27B (`@cf/qwen/qwen3.8-27b`)
+### Conversation model: a tree, not a list
 
-2. **Persistent Storage** — Uses D1 database to store:
-   - Conversations with titles and timestamps
-   - Message history with role and content
-   - Daily neuron usage tracking
+Each row in the `messages` table has a `parent_id` and an `active_child_id`. A conversation is a tree; the "active path" (root → active leaf, following `active_child_id` at each step) is what's displayed. Regenerating a message inserts a new sibling under the same parent and repoints `active_child_id` — nothing is ever deleted, so switching back to an older variant with the ◀ button is always possible.
 
-3. **Conversation Management**:
-   - Create new conversations with custom titles
-   - Rename existing conversations
-   - Delete conversations (with cascade deletion of messages)
-   - Persistent conversation history across sessions
+### Memory
 
-4. **Regeneration System**:
-   - Replace the last assistant response with a new version
-   - Version history with navigation arrows (←/→)
-   - Parallel versions stored in memory
-   - Counter showing current/total versions (e.g., "2/3")
+Config values `MEMORY_RECENT_VERBATIM` (30) and `MEMORY_SUMMARY_TRIGGER` (20) control this. When a conversation's context exceeds the verbatim window, the messages older than that window get summarized by the model itself (a small, cheap call capped at `MEMORY_SUMMARY_MAX_TOKENS`), and the summary is stored on the conversation row (`memory_summary`, `memory_covered_count`). It's only regenerated once enough new older messages accumulate, not on every turn.
 
-5. **Neuron Dashboard**:
-   - Real-time tracking of daily neuron usage
-   - Visual progress bar (color-coded: green → yellow → red)
-   - Shows used/remaining neurons (10,000/day free limit)
-   - Prevents requests when daily limit is exceeded
+### Neuron budget
 
-6. **Markdown Rendering**:
-   - Full markdown support including:
-     - Headers (H1-H4)
-     - Lists (ordered and unordered)
-     - Code blocks with syntax highlighting
-     - Inline code
-     - Blockquotes
-     - Tables
-     - Bold and italic text
-     - Links and images
+`DAILY_NEURON_LIMIT` (10,000 by default) is checked before every model call, tracked per calendar day in the `neuron_usage` table. The sidebar dashboard reflects this. Cloudflare's actual Workers AI free allocation may differ — adjust the constant to match your plan.
 
-7. **UI Features**:
-   - Sidebar with conversation list
-   - Model selector dropdown
-   - Message actions (regenerate)
-   - Custom modals (no browser popups)
-   - Mobile-responsive design
-   - Light/dark theme
-   - Auto-resizing text input
-   - Typing indicator
-   - Error toast notifications
+## Configuration reference
 
-### Database Schema
+All of these are constants at the top of `worker.js` (no redeploy-free env-based config — edit and `wrangler deploy` again):
 
-The Worker automatically creates and manages three tables:
+| Constant | Default | Meaning |
+|---|---|---|
+| `MODEL` | Llama 4 Scout | Fallback model if none is specified in a request |
+| `TEMPERATURE` | 0.7 | Default sampling temperature |
+| `MAX_PROMPT_LENGTH` | 2000 | Max characters per user message |
+| `DAILY_NEURON_LIMIT` | 10000 | Daily Workers AI neuron budget |
+| `MAX_SEARCH_RESULTS` | 5 | Search results fetched per query |
+| `SEARCH_TIMEOUT_MS` | 8000 | Hard timeout on search provider requests |
+| `MEMORY_RECENT_VERBATIM` | 30 | Messages kept word-for-word before summarizing |
+| `MEMORY_SUMMARY_TRIGGER` | 20 | New older messages needed before re-summarizing |
 
-**conversations**
-```sql
-CREATE TABLE conversations (
-  id TEXT PRIMARY KEY,
-  title TEXT,
-  created_at INTEGER,
-  updated_at INTEGER
-)
-```
+`FREE_MODELS` is the allowlist of selectable models and their per-model `maxTokens` ceiling — add or remove entries here to change what appears in the composer's model picker (must be model IDs available to your Workers AI account).
 
-**messages**
-```sql
-CREATE TABLE messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  conversation_id TEXT,
-  role TEXT,
-  content TEXT,
-  timestamp INTEGER,
-  FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-)
-```
+## API
 
-**neuron_usage**
-```sql
-CREATE TABLE neuron_usage (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  date TEXT UNIQUE,
-  used INTEGER DEFAULT 0
-)
-```
+All endpoints are same-origin, JSON in/out (except the two streaming ones), and CORS-open by default (`CORS_ORIGIN: '*'` in `CONFIG`).
 
-### API Endpoints
+| Method & path | Purpose |
+|---|---|
+| `GET /` | The app itself (HTML/CSS/JS) |
+| `GET /api/neurons` | Today's neuron usage vs. limit |
+| `GET /api/conversations` | List conversations (id, title, timestamps, message count) |
+| `POST /api/conversations` | Create a conversation (`{title}`) |
+| `GET /api/conversations/:id` | Get a conversation's active message path |
+| `PUT /api/conversations/:id` | Rename (`{title}`) |
+| `DELETE /api/conversations/:id` | Delete a conversation and its messages |
+| `POST /api/conversations/:id/branch` | Switch which sibling variant is active (`{message_id}`) |
+| `POST /api/chat` | Send a message; **streams** newline-delimited JSON status/result events |
+| `POST /api/regenerate` | Regenerate a message; **streams** the same way (`{conversation_id, message_id, model, web_search}`) |
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Serves the HTML UI |
-| `/api/conversations` | GET | Lists all conversations |
-| `/api/conversations` | POST | Creates a new conversation |
-| `/api/conversations/:id` | GET | Gets a conversation with messages |
-| `/api/conversations/:id` | PUT | Renames a conversation |
-| `/api/conversations/:id` | DELETE | Deletes a conversation and its messages |
-| `/api/chat` | POST | Sends a message and gets AI response |
-| `/api/regenerate` | POST | Regenerates the last assistant response |
-| `/api/neurons` | GET | Gets today's neuron usage |
+`/api/chat` and `/api/regenerate` return `application/x-ndjson`: one or more `{"type":"status","stage":"searching"|"generating"}` lines while working, followed by exactly one `{"type":"result", success, ...}` line. Because the HTTP status is always 200 once streaming starts, check `success` in the result event rather than the response status code.
 
-### Request/Response Formats
+## Limitations worth knowing
 
-**POST /api/chat**
-```json
-{
-  "conversation_id": "uuid",
-  "prompt": "What is Cloudflare?",
-  "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
-  "temperature": 0.7,
-  "max_tokens": 1000
-}
-```
+- **Web search free tiers are capped, not unlimited** — Tavily's is 1,000/month. There's no genuinely free *and* unlimited *and* official search API; this app fails soft (a toast, not a crash) if you exceed a quota or haven't configured a key.
+- **Neuron accounting is an estimate** pre-call and reconciled with whatever Workers AI reports post-call — it's a budgeting guardrail, not a billing-grade meter.
+- **No authentication** — anyone with the Worker's URL can use it and see all conversations. Fine for personal/single-user use; put it behind Cloudflare Access (or add your own auth check at the top of `fetch`) before sharing the URL.
+- **Single Worker file** — great for zero-build simplicity, painful to code-review as a diff once it grows much further. If you plan to extend this a lot, consider splitting the embedded UI out into its own asset.
 
-**Response:**
-```json
-{
-  "success": true,
-  "response": "Cloudflare is...",
-  "messages": [...],
-  "neurons_used": 45,
-  "total_neurons_used": 234,
-  "remaining_neurons": 9766
-}
-```
+## License
 
-**POST /api/regenerate**
-```json
-{
-  "conversation_id": "uuid",
-  "history": [...],
-  "prompt": "What is Cloudflare?",
-  "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
-  "temperature": 0.7,
-  "max_tokens": 1000
-}
-```
-
-### Model Allowlist
-
-The Worker enforces a server-side model allowlist to prevent bypassing the UI:
-
-```javascript
-var FREE_MODELS = {
-  '@cf/meta/llama-4-scout-17b-16e-instruct': { name: 'Llama 4 17B', maxTokens: 1000 },
-  '@cf/openai/gpt-oss-120b': { name: 'GPT-OSS 120B', maxTokens: 1000 },
-  '@cf/google/gemma-4-26b-a4b-it': { name: 'Gemma 4 26B', maxTokens: 800 },
-  '@cf/zai-org/glm-4.7-flash': { name: 'GLM 4.7 Flash', maxTokens: 800 },
-  '@cf/qwen/qwen3.8-27b': { name: 'Qwen 3.8 27B', maxTokens: 1000 }
-};
-```
-
-### Security Features
-
-1. **Server-side validation** — All inputs are validated before processing
-2. **Model allowlist** — Only approved models can be used
-3. **Prompt length limit** — 2,000 character maximum
-4. **Token clamping** — Temperature and max_tokens are clamped to safe values
-5. **Neuron limit enforcement** — Prevents exceeding the 10,000 daily limit
-6. **CORS headers** — Configurable CORS origin
-7. **SQL injection protection** — Uses prepared statements
-
-### Performance Optimizations
-
-1. **Cached database initialization** — Tables are created once per instance
-2. **Limited history** — Only the last 20 messages are sent to the AI
-3. **Parallel operations** — Database writes use `Promise.all()` and `batch()`
-4. **Order by ID** — Messages are ordered by auto-incrementing ID, not timestamp
-5. **No unnecessary queries** — The final message query is eliminated
-6. **ON DELETE CASCADE** — Messages are automatically deleted with conversations
-
----
-
-## Deploying
-
-### Prerequisites
-
-1. Cloudflare account with Workers and D1 access
-2. Wrangler CLI (optional, can deploy via dashboard)
-
-### Step 1: Create D1 Database
-
-Using Wrangler:
-```bash
-wrangler d1 create whitedragon-ai
-```
-
-Or via the Cloudflare Dashboard:
-1. Go to Workers & Pages → D1
-2. Click **Create database**
-3. Name: `whitedragon-ai`
-4. Click **Create**
-
-### Step 2: Deploy the Worker
-
-**Option A: Dashboard (Recommended for quick deployment)**
-1. Go to Workers & Pages → Create application
-2. Click **Create Worker**
-3. Name your worker and click **Deploy**
-4. Click **Edit code**
-5. Paste the entire `worker.js` file
-6. Add D1 binding:
-   - Go to Settings → Variables
-   - Under D1 Database Bindings, click **Add binding**
-   - Variable name: `DB`
-   - Select database: `whitedragon-ai`
-7. Click **Save and Deploy**
-
-**Option B: Wrangler CLI**
-```bash
-wrangler deploy worker.js
-```
-
-### Step 3: Accept Model Licenses
-
-Before using each model, you must accept the license in the Cloudflare dashboard:
-1. Go to AI → Models
-2. Find each model you want to use
-3. Click **Agree** to accept the terms
-
-### Step 4: (Optional) Enable Cloudflare Access
-
-For production use, protect your Worker with authentication:
-1. Go to Zero Trust → Access → Applications
-2. Add your Worker URL
-3. Configure authentication method (email, OTP, etc.)
-4. Set access policies
-
----
-
-## Using it
-
-1. Open your Worker's URL (e.g., `https://webcore-ai.your-subdomain.workers.dev/`)
-2. The sidebar shows your conversations
-3. Click **+ New Chat** to start a conversation
-4. Select a model from the dropdown
-5. Type your message and press Enter or click Send
-6. Hover over any assistant message and click **⟳** to regenerate
-7. Use **←** and **→** to navigate between versions
-8. Rename conversations by clicking **✎**
-9. Delete conversations by clicking **✕**
-
----
-
-## Known limitations
-
-- **No authentication built-in** — The Worker is publicly accessible by default. Use Cloudflare Access for authentication.
-- **Neuron tracking starts from 0** — Previous usage before this version isn't tracked.
-- **History limited to 20 messages** — Older messages are not sent to the AI (but are preserved in storage).
-- **Regeneration versions are in-memory only** — Versions are not persisted to the database.
-- **Model availability depends on Cloudflare** — Some models may require acceptance or have different availability.
-- **Neuron estimation is approximate** — Actual neuron usage may vary from estimates.
-
----
-
-## Testing checklist
-
-| # | Action | What you're checking | Expected result |
-|---|---|---|---|
-| 1 | Open the Worker's bare URL | UI loads | White theme, sidebar, conversation list, input area |
-| 2 | Click + New Chat, enter a title | Conversation creation | New conversation appears in sidebar, welcome message shown |
-| 3 | Type a prompt and send | Basic chat | Message appears, typing indicator shows, AI responds with markdown |
-| 4 | Switch models using dropdown | Model switching | Badge updates, next response uses new model |
-| 5 | Hover over assistant message, click ⟳ | Regeneration | Shows "Regenerating...", new response replaces old |
-| 6 | Click ← and → on regenerated message | Version navigation | Content switches between versions, counter updates (e.g., "2/3") |
-| 7 | Click ✎ on a conversation | Rename | Modal appears, enter new name, sidebar updates |
-| 8 | Click ✕ on a conversation | Delete | Delete confirmation modal, conversation removed |
-| 9 | Refresh the page | Persistence | Conversation and messages reload from database |
-| 10 | Send multiple messages | History tracking | All messages preserved, scrolling works |
-| 11 | Check neuron dashboard | Usage tracking | Used neurons increase, remaining decreases, progress bar updates |
-| 12 | Click the theme toggle | Theme switch | Dark/light theme persists across reloads |
-| 13 | Use mobile view (DevTools) | Responsive | Sidebar collapses, hamburger menu appears |
-| 14 | Send a very long prompt (>2000 chars) | Server-side validation | Error message: "Prompt too long" |
-| 15 | Try to use a model not in the dropdown | Model allowlist | Error: "Model is not available on this deployment" |
-
----
-
-## Architecture diagram
-
-```
-                    ┌──────────────────────┐
-                    │    Client Browser    │
-                    │   (HTML + JS + CSS)  │
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────▼───────────┐
-                    │   Cloudflare Worker  │
-                    │      (worker.js)     │
-                    └──────────┬───────────┘
-                               │
-        ┌──────────────────────┼──────────────────────┐
-        │                      │                      │
-┌───────▼───────┐    ┌────────▼────────┐   ┌─────────▼─────────┐
-│   D1 Database │    │  Workers AI     │   │  Neuron Usage     │
-│ whitedragon-ai│    │  (env.AI.run)   │   │  (tracking)       │
-│               │    │                 │   │                   │
-│ conversations │    │  Llama 4 17B    │   │  Daily limit      │
-│ messages      │    │  GPT-OSS 120B   │   │  10,000 neurons   │
-│ neuron_usage  │    │  Gemma 4 26B    │   │                   │
-│               │    │  GLM 4.7 Flash  │   │                   │
-│               │    │  Qwen 3.8 27B   │   │                   │
-└───────────────┘    └─────────────────┘   └───────────────────┘
-```
-
----
-
-## File map
-
-```
-worker.js
-├─ CONFIG                    → Model defaults, limits, CORS
-├─ FREE_MODELS               → Server-side model allowlist
-├─ UI_HTML                   → Complete HTML/CSS/JS UI
-│   ├─ Sidebar
-│   ├─ Conversation list
-│   ├─ Chat container
-│   ├─ Message rendering
-│   ├─ Markdown renderer
-│   ├─ Modals (new/rename/delete)
-│   ├─ Neuron dashboard
-│   └─ Model selector
-├─ initDatabase()            → Idempotent D1 table creation
-├─ default.fetch()           → Request routing
-│   ├─ GET /                 → Serve UI
-│   ├─ GET /api/neurons      → Get neuron usage
-│   ├─ GET /api/conversations → List conversations
-│   ├─ POST /api/conversations → Create conversation
-│   ├─ PUT /api/conversations/:id → Rename
-│   ├─ DELETE /api/conversations/:id → Delete with cascade
-│   ├─ POST /api/chat        → Send message with AI
-│   └─ POST /api/regenerate  → Regenerate response
-└─ Database operations        → Prepared statements, batch writes
-```
-
----
-
-## Troubleshooting
-
-| Issue | Likely cause | Solution |
-|-------|--------------|----------|
-| "Model is not available on this deployment" | License not accepted | Go to AI → Models, accept terms for the model |
-| "Daily neuron limit exceeded" | Used all 10,000 neurons | Wait for daily reset (midnight UTC) or upgrade plan |
-| Database tables not created | Permission issue | Ensure D1 binding is named "DB" |
-| "Could not find the previous user message" | No user message to regenerate | Only regenerate after a user message |
-| Regeneration not working | Version history empty | Ensure at least one assistant message exists |
-| UI not loading | Wrong Worker URL | Check you're accessing the correct URL |
-| Sidebar empty | No conversations | Create a new conversation with + New Chat |
-| Markdown not rendering | Invalid markdown format | Check the AI response format |
+Use it, modify it, ship it — no license restrictions implied by this README. Add your own `LICENSE` file if you need one.
