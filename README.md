@@ -1,155 +1,179 @@
 # Webcore AI
 
-A self-hosted AI chat app that runs entirely on Cloudflare's edge — one Worker file, one D1 database, no server to manage. It talks to Cloudflare Workers AI for inference, optionally grounds answers in live web search, and keeps a full branching history of every conversation (including every regenerated variant), similar to claude.ai.
+Developer: WhiteDragon-dev
 
-## Features
+A minimal AI chat app that runs entirely on Cloudflare's edge — one Worker
+file, one D1 database, no server to manage. It talks to Cloudflare
+Workers AI for inference, optionally grounds answers in live web search,
+and keeps a full branching history of every conversation (including every
+regenerated variant), the same way claude.ai does.
 
-- **Chat with a choice of open models** — Llama 4 Scout, GPT‑OSS 120B, Gemma 4, GLM 4.7 Flash, Qwen 3.8 — all served through Workers AI, picked per-message from the composer.
-- **Branching regeneration** — regenerating a reply never deletes anything. It creates a sibling branch, so every past variant stays reachable via the ◀ ▶ version controls, even after a reload or from another device.
-- **Long-conversation memory** — the most recent ~30 messages are always sent to the model word-for-word. Anything older is folded into a running summary instead of being silently dropped, so very long conversations don't lose context.
-- **Optional web search grounding** — toggle the globe icon in the composer to ground a reply in live search results (via Tavily or Brave). Sources are appended to the reply and persisted with it.
-- **Live status while it works** — the composer shows "Searching the web…" / "Thinking…" as it happens, streamed from the server rather than a generic spinner.
-- **Daily neuron usage dashboard** — tracks Workers AI usage against `DAILY_NEURON_LIMIT` so you don't get an unpleasant surprise.
-- **Light/dark theme**, mobile-friendly layout with swipe-to-open sidebar, and a centered landing composer for new chats.
-- Everything — UI, API, and routing — lives in a single Worker script. No build step, no frontend framework, no separate hosting.
+---
 
-## Requirements
+## Contents
 
-- A [Cloudflare account](https://dash.cloudflare.com/sign-up) (Workers AI and D1 are available on the free plan)
-- [Node.js](https://nodejs.org/) and the [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (`npm install -g wrangler`)
-- (Optional, recommended) A free [Tavily](https://tavily.com) account if you want web search grounding
+- `worker.js` — the entire app: the HTTP routing, the D1 schema and
+  migrations, the conversation-tree/branching logic, memory
+  summarization, web search grounding, and the whole frontend (the UI is
+  a single HTML string served at `GET /`, with its CSS and vanilla JS
+  inlined — there is no separate frontend build)
+- `wrangler.toml` — Worker manifest: name, entry point, and the `DB`
+  (D1) and `AI` (Workers AI) bindings the code expects at `env.DB` /
+  `env.AI`
+- `.dev.vars` *(not committed)* — local-only secrets for `wrangler dev`,
+  e.g. `TAVILY_API_KEY`
 
-## Setup
-
-### 1. Create the D1 database
-
-```bash
-wrangler d1 create webcore-ai-db
-```
-
-This prints a `database_id` — you'll need it in the next step. The Worker creates its own tables on first request (conversations, messages, neuron usage), so there's no schema file to run by hand.
-
-### 2. Configure `wrangler.toml`
-
-Create a `wrangler.toml` next to `worker.js`:
-
-```toml
-name = "webcore-ai"
-main = "worker.js"
-compatibility_date = "2024-09-23"
-
-[[d1_databases]]
-binding = "DB"
-database_name = "webcore-ai-db"
-database_id = "<the database_id from step 1>"
-
-[ai]
-binding = "AI"
-```
-
-The binding names (`DB` and `AI`) must match exactly — the Worker code refers to `env.DB` and `env.AI`.
-
-### 3. (Optional) Enable web search
-
-Without a key, the web-search toggle in the UI will show a clear error instead of failing silently — the rest of the app works fine without it.
-
-**Recommended: Tavily** — free, no card required, 1,000 searches/month, built specifically for grounding LLM answers:
-
-```bash
-wrangler secret put TAVILY_API_KEY
-```
-
-Get a key at [tavily.com](https://tavily.com).
-
-**Alternative: Brave Search API** — used automatically if `TAVILY_API_KEY` isn't set. Note Brave's free tier now requires a card at signup.
-
-```bash
-wrangler secret put BRAVE_API_KEY
-```
-
-If neither secret is set, search requests return: *"Web search needs a free API key. Sign up at tavily.com..."*
-
-### 4. Deploy
-
-```bash
-wrangler deploy
-```
-
-Wrangler prints your Worker's URL (`https://webcore-ai.<your-subdomain>.workers.dev`). Open it — that's the whole app.
-
-### Local development
-
-```bash
-wrangler dev
-```
-
-Runs the Worker locally with a local D1 instance. Note: web search calls a real external API even in local dev, so set the secret in `.dev.vars` (a local file, not committed) if you want to test it:
-
-```
-TAVILY_API_KEY=tvly-your-key-here
-```
+---
 
 ## How it works
 
 ### Everything is one file
 
-`worker.js` contains the backend (a standard `fetch` handler), the database schema/migrations, and the entire frontend — the UI is a single HTML string served at `GET /`, with its CSS and vanilla JS inlined. There's no build step because there's nothing to build.
+`worker.js` is a standard Workers `fetch` handler. There's no build
+step because there's nothing to build: the frontend is generated by
+concatenating template strings into one `UI_HTML` constant, returned
+as-is for `GET /`. Every other route is JSON in, JSON out — except the
+two streaming ones (see below).
 
 ### Conversation model: a tree, not a list
 
-Each row in the `messages` table has a `parent_id` and an `active_child_id`. A conversation is a tree; the "active path" (root → active leaf, following `active_child_id` at each step) is what's displayed. Regenerating a message inserts a new sibling under the same parent and repoints `active_child_id` — nothing is ever deleted, so switching back to an older variant with the ◀ button is always possible.
+Each row in the `messages` table has a `parent_id` and an
+`active_child_id`. A conversation is a tree; the "active path" (root →
+active leaf, following `active_child_id` at each step) is what's
+displayed. Regenerating a message never deletes or overwrites it —
+it inserts a new sibling under the same parent and repoints
+`active_child_id` at the new one. Every past variant stays in the
+table and is reachable again with the ◀ ▶ version controls, even after
+a reload or from a different device, because nothing is ever deleted by
+a regenerate.
 
 ### Memory
 
-Config values `MEMORY_RECENT_VERBATIM` (30) and `MEMORY_SUMMARY_TRIGGER` (20) control this. When a conversation's context exceeds the verbatim window, the messages older than that window get summarized by the model itself (a small, cheap call capped at `MEMORY_SUMMARY_MAX_TOKENS`), and the summary is stored on the conversation row (`memory_summary`, `memory_covered_count`). It's only regenerated once enough new older messages accumulate, not on every turn.
+The model only ever sees the most recent few dozen messages
+word-for-word (`MEMORY_RECENT_VERBATIM`, default 30). Once a
+conversation grows past that window, everything older is folded into a
+running summary instead of being dropped — the summary itself is
+produced by a small, cheap call to the same model, capped at
+`MEMORY_SUMMARY_MAX_TOKENS`, and stored on the conversation row
+(`memory_summary`, `memory_covered_count`). It's only regenerated once
+enough new older messages have piled up (`MEMORY_SUMMARY_TRIGGER`, 20),
+not on every single turn, so long conversations don't get noticeably
+slower or more expensive as they grow.
+
+### Web search grounding
+
+Toggling the globe icon in the composer runs the prompt through a
+search provider (Tavily first if `TAVILY_API_KEY` is set, else Brave if
+`BRAVE_API_KEY` is set) before the model call, and folds the results
+into a one-off system message that's sent to the model but never
+written to the database — so a conversation can't carry stale search
+results into a later, unrelated turn. The reply's sources are appended
+to the assistant message itself as ordinary markdown links, so *those*
+do persist with the message across reloads and branch switches. If
+neither key is set, the toggle still works but returns one clear error
+instead of trying to scrape a search engine — DuckDuckGo in particular
+now actively blocks that kind of traffic, which is what made an earlier
+version of this feature slow and unreliable.
+
+### Live status while it works
+
+`POST /api/chat` and `POST /api/regenerate` don't return a single JSON
+blob — they stream newline-delimited JSON: one `{"type":"status",
+"stage":"searching"|"generating"}` line for each phase as it starts,
+followed by exactly one `{"type":"result", success, ...}` line at the
+end. The composer's "Searching the web…" / "Thinking…" label is driven
+directly by those status events, not a guessed timeout.
 
 ### Neuron budget
 
-`DAILY_NEURON_LIMIT` (10,000 by default) is checked before every model call, tracked per calendar day in the `neuron_usage` table. The sidebar dashboard reflects this. Cloudflare's actual Workers AI free allocation may differ — adjust the constant to match your plan.
+Every model call is checked against `DAILY_NEURON_LIMIT` (10,000 by
+default) before it's made, tracked per calendar day in the
+`neuron_usage` table, and shown live in the sidebar dashboard. This is
+a budgeting guardrail based on Cloudflare's per-call usage figures, not
+a billing-grade meter — adjust the constant to match your actual plan.
 
-## Configuration reference
+---
 
-All of these are constants at the top of `worker.js` (no redeploy-free env-based config — edit and `wrangler deploy` again):
+## Building
 
-| Constant | Default | Meaning |
-|---|---|---|
-| `MODEL` | Llama 4 Scout | Fallback model if none is specified in a request |
-| `TEMPERATURE` | 0.7 | Default sampling temperature |
-| `MAX_PROMPT_LENGTH` | 2000 | Max characters per user message |
-| `DAILY_NEURON_LIMIT` | 10000 | Daily Workers AI neuron budget |
-| `MAX_SEARCH_RESULTS` | 5 | Search results fetched per query |
-| `SEARCH_TIMEOUT_MS` | 8000 | Hard timeout on search provider requests |
-| `MEMORY_RECENT_VERBATIM` | 30 | Messages kept word-for-word before summarizing |
-| `MEMORY_SUMMARY_TRIGGER` | 20 | New older messages needed before re-summarizing |
+```
+wrangler d1 create webcore-ai-db      # once, to get a database_id for wrangler.toml
+wrangler secret put TAVILY_API_KEY     # optional, enables web search
+wrangler dev                           # run locally
+wrangler deploy                        # ship it
+```
 
-`FREE_MODELS` is the allowlist of selectable models and their per-model `maxTokens` ceiling — add or remove entries here to change what appears in the composer's model picker (must be model IDs available to your Workers AI account).
+There's no `npm install` step and no bundler — `worker.js` is deployed
+as-is. The D1 schema is created by the Worker itself on its first
+request (`initDatabase()`), including `ALTER TABLE` migrations for
+older deployments, so there is no separate schema file to run by hand.
 
-## API
+---
 
-All endpoints are same-origin, JSON in/out (except the two streaming ones), and CORS-open by default (`CORS_ORIGIN: '*'` in `CONFIG`).
+## Known limitations
 
-| Method & path | Purpose |
-|---|---|
-| `GET /` | The app itself (HTML/CSS/JS) |
-| `GET /api/neurons` | Today's neuron usage vs. limit |
-| `GET /api/conversations` | List conversations (id, title, timestamps, message count) |
-| `POST /api/conversations` | Create a conversation (`{title}`) |
-| `GET /api/conversations/:id` | Get a conversation's active message path |
-| `PUT /api/conversations/:id` | Rename (`{title}`) |
-| `DELETE /api/conversations/:id` | Delete a conversation and its messages |
-| `POST /api/conversations/:id/branch` | Switch which sibling variant is active (`{message_id}`) |
-| `POST /api/chat` | Send a message; **streams** newline-delimited JSON status/result events |
-| `POST /api/regenerate` | Regenerate a message; **streams** the same way (`{conversation_id, message_id, model, web_search}`) |
+- **No authentication.** Anyone with the Worker's URL can use it and
+  see every conversation. Fine for personal/single-user use; put it
+  behind Cloudflare Access, or add your own check at the top of
+  `fetch()`, before sharing the URL with anyone else.
+- **Web search free tiers are capped, not unlimited** — Tavily's is
+  1,000 requests/month. There is no search provider that is genuinely
+  free *and* unlimited *and* stable; this app fails soft (a toast, not
+  a crash) once a quota is hit or no key is configured.
+- **Neuron accounting is an estimate**, reconciled with whatever
+  Workers AI reports back after each call — a guardrail against
+  runaway usage, not an exact cost meter.
+- **Single Worker file.** Great for zero-build simplicity; the
+  embedded UI will get harder to review as a diff if it grows much
+  further. Consider splitting `UI_HTML` into its own asset if that
+  happens.
+- **No multi-user memory isolation** — the long-conversation summary is
+  per-conversation, not per-user, since there's no user concept at all
+  yet (see "No authentication" above).
 
-`/api/chat` and `/api/regenerate` return `application/x-ndjson`: one or more `{"type":"status","stage":"searching"|"generating"}` lines while working, followed by exactly one `{"type":"result", success, ...}` line. Because the HTTP status is always 200 once streaming starts, check `success` in the result event rather than the response status code.
+---
 
-## Limitations worth knowing
+## Testing checklist
 
-- **Web search free tiers are capped, not unlimited** — Tavily's is 1,000/month. There's no genuinely free *and* unlimited *and* official search API; this app fails soft (a toast, not a crash) if you exceed a quota or haven't configured a key.
-- **Neuron accounting is an estimate** pre-call and reconciled with whatever Workers AI reports post-call — it's a budgeting guardrail, not a billing-grade meter.
-- **No authentication** — anyone with the Worker's URL can use it and see all conversations. Fine for personal/single-user use; put it behind Cloudflare Access (or add your own auth check at the top of `fetch`) before sharing the URL.
-- **Single Worker file** — great for zero-build simplicity, painful to code-review as a diff once it grows much further. If you plan to extend this a lot, consider splitting the embedded UI out into its own asset.
+Work through these after any change to the routing, the conversation
+tree, memory, or search — each targets a specific layer, so a failure
+narrows down where to look.
 
-## License
+| # | Action | What you're checking | Expected result |
+|---|---|---|---|
+| 1 | Load the Worker's URL fresh, with no conversation selected, and send a message | Auto-create-on-send | A "New Chat" conversation is created and the message sends into it — no dead-end requiring you to create a chat first. |
+| 2 | Send several messages in a row | Basic chat + streaming | "Thinking…" shows while waiting; the reply renders with markdown (lists, code blocks, bold) intact. |
+| 3 | Regenerate an assistant reply, then press ◀ | Branching | A new variant is generated; pressing ◀ brings back the original untouched; pressing ▶ returns to the regenerated one. |
+| 4 | Regenerate a reply that is *not* the last message in the conversation (switch to an older branch first, then regenerate something mid-conversation) | Branching correctness | Only that message's siblings change; everything before it is unaffected. |
+| 5 | Reload the page after several regenerations | Persistence | All variants and the currently active branch are exactly as left — nothing reverts to a default. |
+| 6 | Have a conversation past ~30 messages, then ask something that depends on early context | Memory | The reply reflects the early context correctly, confirming the summary (not just the last 30 messages) is reaching the model. |
+| 7 | Toggle web search on, ask something time-sensitive | Search grounding | Reply includes current information and a rendered **Sources** list with clickable links; "Searching the web…" appears first. |
+| 8 | Toggle web search on with no `TAVILY_API_KEY`/`BRAVE_API_KEY` set | Graceful failure | A clear toast explaining a key is needed; the chat still answers (without grounding) rather than hanging or erroring out. |
+| 9 | Rename and delete a conversation from the sidebar | Conversation management | Sidebar updates immediately; deleting the active conversation clears the chat pane. |
+| 10 | Resize to a narrow/mobile width | Responsive layout | Sidebar becomes a swipeable overlay; composer stays usable; no horizontal scroll. |
+| 11 | Toggle dark mode | Theming | Whole app switches immediately and persists across reload. |
+| 12 | Check the sidebar's neuron usage bar after a few messages | Neuron budgeting | Used/remaining figures update after each reply and match roughly what was sent (no negative or frozen values). |
 
-Use it, modify it, ship it — no license restrictions implied by this README. Add your own `LICENSE` file if you need one.
+---
+
+## File map
+
+```
+worker.js
+├─ CONFIG / FREE_MODELS       → tunable constants and the model allowlist
+├─ UI_HTML                    → the entire frontend: CSS, HTML shell, client-side JS
+├─ initDatabase()             → D1 schema creation + ALTER TABLE migrations
+├─ resolveModel / clamp*      → per-request model + parameter validation
+├─ runAIModel()                → normalizes the different Workers AI response shapes
+├─ webSearch / webSearchTavily / webSearchBrave
+│                              → search provider dispatch, with timeouts
+├─ buildSearchContextMessage / formatSourcesMarkdown
+│                              → folds search results into the model call and into the saved reply
+├─ getConversationMemory / summarizeOlderMessages / buildModelContext
+│                              → the long-conversation summarization system
+├─ loadConversationTree / getActivePath / getAncestorMessages
+│  / pathToNode / buildDisplayItem
+│                              → the branching conversation-tree logic
+├─ streamJsonEvents()          → the NDJSON status/result streaming helper
+└─ export default { fetch }    → routing for all /api/* endpoints and GET /
+```
