@@ -129,10 +129,17 @@ var UI_HTML = '<!DOCTYPE html><html lang="en" data-theme="light"><head><meta cha
 '.thinking-block summary{cursor:pointer;font-family:ui-monospace,"SF Mono",Menlo,Monaco,Consolas,"Liberation Mono",monospace;font-size:11px;color:var(--text-dim);padding:5px 8px;user-select:none}' +
 '.thinking-block[open] summary{border-bottom:1px solid var(--border)}' +
 '.thinking-content{padding:6px 8px;color:var(--text-dim)}' +
-'.html-block{border:1px solid var(--border);border-radius:4px;overflow:hidden;margin:4px 0}' +
-'.html-block-tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg)}' +
-'.html-tab{padding:4px 10px;font-size:11px;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;color:var(--text-dim)}' +
+'.html-block{border:1px solid var(--border);border-radius:4px;overflow:hidden;margin:4px 0;background:var(--bg)}' +
+'.html-block summary{cursor:pointer;list-style:none;padding:6px 10px;font-family:ui-monospace,"SF Mono",Menlo,Monaco,Consolas,"Liberation Mono",monospace;font-size:11px;color:var(--text-dim);background:var(--surface);user-select:none}' +
+'.html-block summary::-webkit-details-marker{display:none}' +
+'.html-block[open] summary{border-bottom:1px solid var(--border)}' +
+'.html-block-body{background:var(--bg)}' +
+'.html-block-tabs{display:flex;align-items:center;border-bottom:1px solid var(--border);background:var(--bg);padding:0 4px}' +
+'.html-tab{padding:6px 10px;font-size:11px;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;color:var(--text-dim)}' +
 '.html-tab.active{color:var(--accent);border-bottom-color:var(--accent)}' +
+'.html-block-spacer{flex:1}' +
+'.html-action{padding:4px 8px;margin:3px 2px;font-size:10px;background:var(--surface);border:1px solid var(--border);border-radius:3px;cursor:pointer;color:var(--text-dim)}' +
+'.html-action:hover{color:var(--text);border-color:var(--text-dim)}' +
 '.html-code{margin:0;border:none;border-radius:0}' +
 '.html-preview{display:none}' +
 '.html-preview iframe{width:100%;height:320px;border:none;background:#fff;display:block}' +
@@ -201,8 +208,7 @@ var UI_HTML = '<!DOCTYPE html><html lang="en" data-theme="light"><head><meta cha
 'function toggleSidebar(){sidebar.classList.toggle("open");sidebarOverlay.classList.toggle("show")}function closeSidebar(){sidebar.classList.remove("open");sidebarOverlay.classList.remove("show")}function openSidebar(){sidebar.classList.add("open");sidebarOverlay.classList.add("show")}hamburgerBtn.addEventListener("click",toggleSidebar);sidebarOverlay.addEventListener("click",closeSidebar);' +
 '(function initSwipeGestures(){var startX=null,startY=null;document.addEventListener("touchstart",function(e){if(e.touches.length!==1)return;startX=e.touches[0].clientX;startY=e.touches[0].clientY},{passive:!0});document.addEventListener("touchend",function(e){if(startX===null||window.innerWidth>=768)return;var t=e.changedTouches[0],dx=t.clientX-startX,dy=t.clientY-startY;if(Math.abs(dx)>60&&Math.abs(dy)<60){if(dx>0&&startX<24&&!sidebar.classList.contains("open"))openSidebar();else if(dx<0&&sidebar.classList.contains("open"))closeSidebar()}startX=null;startY=null},{passive:!0})})();' +
 'function renderMarkdown(e){if(!e)return"";var t=e.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");var n=t.split("\\n"),r=[],a=!1,o="",l=!1,s=[],codeBlocks=[],fenceLang="",i=0;while(i<n.length){var c=n[i];var fenceMatch=c.match(/^```(\\S*)/);if(fenceMatch){if(l){l=!1;var idx=codeBlocks.length;codeBlocks.push({lang:fenceLang,code:s.join("\\n").trim()});r.push("\\u0000CB"+idx+"\\u0000")}else{l=!0;s=[];fenceLang=(fenceMatch[1]||"").toLowerCase()}i++;continue}if(l){s.push(c);i++;continue}if(""===c.trim()){a&&("ul"===o?r.push("</ul>"):"ol"===o&&r.push("</ol>"),a=!1,o="");i++;continue}if(c.match(/^### /)){r.push("<h3>"+c.replace(/^### /,"")+"</h3>");i++;continue}if(c.match(/^## /)){r.push("<h2>"+c.replace(/^## /,"")+"</h2>");i++;continue}if(c.match(/^# /)){r.push("<h1>"+c.replace(/^# /,"")+"</h1>");i++;continue}if(c.match(/^> /)){r.push("<blockquote>"+c.replace(/^> /,"")+"</blockquote>");i++;continue}if(c.match(/^\\|/)){var d=[],u=!1;while(i<n.length&&n[i].match(/^\\|/)){var p=n[i].split("|").filter(function(e){return e.trim()!=""});d.push(p.map(function(e){return e.trim()}));if(!u&&i+1<n.length&&n[i+1].match(/^\\|/)){var h=n[i+1].split("|").filter(function(e){return e.trim()!=""});if(h.every(function(e){return e.match(/^[\\s\\-:]+$/)||e.match(/^[:\\-]+$/)||e.match(/^\\-+$/)})){u=!0;i++}}i++}var m="<table>";if(d.length>0){m+="<thead><tr>";for(var f=0;f<d[0].length;f++){m+="<th>"+d[0][f]+"</th>"}m+="</tr></thead><tbody>";for(var v=1;v<d.length;v++){m+="<tr>";for(var g=0;g<d[v].length;g++){m+="<td>"+d[v][g]+"</td>"}m+="</tr>"}m+="</tbody>"}m+="</table>";r.push(m);continue}if(c.match(/^\\s*[-*+]\\s/)){a&&"ul"!==o&&(r.push("</ul>"),a=!1,o="");a||(r.push("<ul>"),a=!0,o="ul");r.push("<li>"+c.replace(/^\\s*[-*+]\\s/,"")+"</li>");i++;continue}if(c.match(/^\\s*\\d+\\.\\s/)){a&&"ol"!==o&&(r.push("</ol>"),a=!1,o="");a||(r.push("<ol>"),a=!0,o="ol");r.push("<li>"+c.replace(/^\\s*\\d+\\.\\s/,"")+"</li>");i++;continue}if(a){if("ul"===o)r.push("</ul>");else if("ol"===o)r.push("</ol>");a=!1;o=""}r.push("<p>"+c+"</p>");i++}a&&("ul"===o?r.push("</ul>"):"ol"===o&&r.push("</ol>"));var html=r.join("");html=html.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g,"<a href=\\"$2\\" target=\\"_blank\\" rel=\\"noopener noreferrer\\">$1</a>").replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\\*\\*([^*]+)\\*\\*/g,"<strong>$1</strong>").replace(/\\*([^*]+)\\*/g,"<em>$1</em>").replace(/\\n/g,"<br>");for(var b=0;b<codeBlocks.length;b++){var block=codeBlocks[b];var replacement=block.lang==="html"?buildHtmlPreviewBlock(block.code):("<pre><code>"+block.code+"</code></pre>");html=html.replace("\\u0000CB"+b+"\\u0000",replacement)}return html}' +
-'function buildHtmlPreviewBlock(code){return "<div class=\\"html-block\\"><div class=\\"html-block-tabs\\"><button type=\\"button\\" class=\\"html-tab active\\" data-view=\\"code\\" onclick=\\"toggleHtmlView(this,&#39;code&#39;)\\">Code</button><button type=\\"button\\" class=\\"html-tab\\" data-view=\\"preview\\" onclick=\\"toggleHtmlView(this,&#39;preview&#39;)\\">Preview</button></div><pre class=\\"html-code\\"><code>"+code+"</code></pre><div class=\\"html-preview\\"><iframe sandbox=\\"allow-scripts\\" title=\\"HTML preview\\"></iframe></div><textarea class=\\"html-raw\\" style=\\"display:none\\">"+code+"</textarea></div>"}function toggleHtmlView(btn,view){var block=btn.closest(".html-block");if(!block)return;var tabs=block.querySelectorAll(".html-tab");for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle("active",tabs[i].dataset.view===view)}var codeEl=block.querySelector(".html-code");var previewEl=block.querySelector(".html-preview");if(view==="preview"){codeEl.style.display="none";previewEl.style.display="block";var iframe=previewEl.querySelector("iframe");if(!iframe.dataset.loaded){var raw=block.querySelector(".html-raw").value;iframe.srcdoc=raw;iframe.dataset.loaded="1"}}else{codeEl.style.display="";previewEl.style.display="none"}}'+
-'function apiRequest(e,t,n){return fetch(e,{method:t,headers:{"Content-Type":"application/json"},body:n?JSON.stringify(n):null}).then(function(e){return e.json()})}' +
+'function buildHtmlPreviewBlock(code){return "<details class=\\"html-block\\" ontoggle=\\"onHtmlBlockToggle(this)\\"><summary>&lt;/&gt; HTML file &#8212; click to preview</summary><div class=\\"html-block-body\\"><div class=\\"html-block-tabs\\"><button type=\\"button\\" class=\\"html-tab\\" data-view=\\"code\\" onclick=\\"toggleHtmlView(this,&#39;code&#39;)\\">Code</button><button type=\\"button\\" class=\\"html-tab active\\" data-view=\\"preview\\" onclick=\\"toggleHtmlView(this,&#39;preview&#39;)\\">Preview</button><span class=\\"html-block-spacer\\"></span><button type=\\"button\\" class=\\"html-action\\" onclick=\\"copyHtmlBlock(this)\\">Copy</button><button type=\\"button\\" class=\\"html-action\\" onclick=\\"downloadHtmlBlock(this)\\">Download</button></div><pre class=\\"html-code\\" style=\\"display:none\\"><code>"+code+"</code></pre><div class=\\"html-preview\\" style=\\"display:block\\"><iframe sandbox=\\"allow-scripts\\" title=\\"HTML preview\\"></iframe></div><textarea class=\\"html-raw\\" style=\\"display:none\\">"+code+"</textarea></div></details>"}function loadHtmlIframe(block){var iframe=block.querySelector(".html-preview iframe");if(iframe&&!iframe.dataset.loaded){var raw=block.querySelector(".html-raw").value;iframe.srcdoc=raw;iframe.dataset.loaded="1"}}function onHtmlBlockToggle(details){if(!details.open)return;loadHtmlIframe(details)}function toggleHtmlView(btn,view){var block=btn.closest(".html-block");if(!block)return;var tabs=block.querySelectorAll(".html-tab");for(var i=0;i<tabs.length;i++){tabs[i].classList.toggle("active",tabs[i].dataset.view===view)}var codeEl=block.querySelector(".html-code");var previewEl=block.querySelector(".html-preview");if(view==="preview"){codeEl.style.display="none";previewEl.style.display="block";loadHtmlIframe(block)}else{codeEl.style.display="";previewEl.style.display="none"}}function copyHtmlBlock(btn){var block=btn.closest(".html-block");var raw=block.querySelector(".html-raw").value;var done=function(){var old=btn.textContent;btn.textContent="Copied!";setTimeout(function(){btn.textContent=old},1500)};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(raw).then(done).catch(function(){fallbackCopyText(raw);done()})}else{fallbackCopyText(raw);done()}}function fallbackCopyText(text){var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.left="-9999px";document.body.appendChild(ta);ta.focus();ta.select();try{document.execCommand("copy")}catch(e){}document.body.removeChild(ta)}function downloadHtmlBlock(btn){var block=btn.closest(".html-block");var raw=block.querySelector(".html-raw").value;var blob=new Blob([raw],{type:"text/html"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download="page.html";document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url)},1000)}function apiRequest(e,t,n){return fetch(e,{method:t,headers:{"Content-Type":"application/json"},body:n?JSON.stringify(n):null}).then(function(e){return e.json()})}' +
 'function postStream(e,t,n){return fetch(e,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(t)}).then(function(r){var reader=r.body.getReader(),decoder=new TextDecoder(),buffer="",finalResult=null;function handleLine(line){if(!line.trim())return;var evt;try{evt=JSON.parse(line)}catch(err){return}if(evt.type==="status"){n&&n(evt)}else if(evt.type==="result"){finalResult=evt}}function pump(){return reader.read().then(function(res){if(res.done){if(buffer)handleLine(buffer);return finalResult||{success:!1,error:"No response from server"}}buffer+=decoder.decode(res.value,{stream:!0});var parts=buffer.split("\\n");buffer=parts.pop();parts.forEach(handleLine);return pump()})}return pump()})}' +
 'function loadConversations(){apiRequest("/api/conversations","GET").then(function(e){e.success&&renderConversationList(e.conversations)}).catch(function(e){console.error(e)})}' +
 'function loadConversation(id){apiRequest("/api/conversations/"+id,"GET").then(function(t){if(t.success){currentConversationId=id;renderMessages(t.messages||[]);chatTitle.textContent=t.title||"Conversation";chatSubtitle.textContent=(t.messages?t.messages.length:0)+" messages";highlightConversation(id);closeSidebar()}}).catch(function(e){console.error(e)})}' +
@@ -581,6 +587,23 @@ function buildThinkingInstructionMessage() {
   };
 }
 
+// Standing instruction, always sent (not tied to a toggle): open models
+// will sometimes describe a file ("here's an HTML page that does X...")
+// without actually including it, especially for longer demos. That leaves
+// nothing for the UI's code/preview/copy/download block to work with, so
+// this is a correctness fix, not a style preference.
+function buildCodeOutputInstructionMessage() {
+  return {
+    role: 'system',
+    content: 'If your answer involves writing any code, an HTML page, a script, or any other file, ' +
+      'you must include its complete contents in a fenced code block with the correct language tag ' +
+      '(for example ```html, ```javascript, ```python) — never omit it, truncate it, or merely describe ' +
+      'what the file would contain. The user can only see, preview, copy, or download exactly what you ' +
+      'put inside the code block, nothing else, so describing a file instead of writing it leaves them ' +
+      'with nothing.'
+  };
+}
+
 // ---- Conversation tree helpers (claude.ai-style branching) ----
 //
 // Every message row has a parent_id. Regenerating an assistant message
@@ -910,6 +933,7 @@ export default {
         // search results forward into later turns.
         if (searchContextMessage) contextMessages.unshift(searchContextMessage);
         if (wantsThinking) contextMessages.unshift(buildThinkingInstructionMessage());
+        contextMessages.unshift(buildCodeOutputInstructionMessage());
 
         await send({ type: 'status', stage: 'generating', model: resolved.model });
         var aiResult = await runAIModel(env, resolved.model, contextMessages, temperature, max_tokens, estimatedNeurons);
@@ -1044,6 +1068,7 @@ export default {
         var modelMessages = await buildModelContext(env, conversationId, resolved.model, ancestors);
         if (searchContextMessage) modelMessages.unshift(searchContextMessage);
         if (wantsThinking) modelMessages.unshift(buildThinkingInstructionMessage());
+        modelMessages.unshift(buildCodeOutputInstructionMessage());
         await send({ type: 'status', stage: 'generating', model: resolved.model });
         var aiResult = await runAIModel(env, resolved.model, modelMessages, temperature, max_tokens, estimatedNeurons);
         if (searchResults.length) aiResult.resultText += formatSourcesMarkdown(searchResults);
